@@ -1,0 +1,222 @@
+/*********** Need additional fields added to the nudges table ************/ 
+-- add historical start date and start dates to nudge data
+with Add_start_date_data as(
+  
+select a.*
+, b.startdate
+, b.historical_intake_startdate
+FROM "tableau"."nudges" a
+left join "tableau"."service_request_production" b
+on a.cohereid = b.cohereid),
+
+
+
+
+/*********** Identify OPS and Product nudges ************/ 
+-- identify records with ops nudge
+OPs_nudges as (
+SELECT *
+FROM Add_start_date_data
+where review_nudge_attempted = TRUE ),
+
+
+-- identify prod nudges
+Prod_nudges as (
+SELECT *
+FROM Add_start_date_data
+where in_product_nudge_attempt = TRUE
+and review_nudge_attempted = FALSE),
+  
+
+
+
+/*********** Validate Ops nudges for SOS, units, timing (select PALs) ************/ 
+validated_ops_nudges as(
+select *
+-- flags for SOS nudges
+, (case when (primaryprocedurecode_palcategory LIKE '%Spinal fusion, decompression, kyphoplasty and vertebroplasty%' 
+             OR primaryprocedurecode_palcategory LIKE '%Orthopedic Surgeries: Hip, Knee and Shoulder Arthroplasty%') 
+          
+             AND (review_nudgetype LIKE '%SERVICES_ON_REQUEST%' 
+                  OR review_nudgetype LIKE '%SITE_OF_SERVICE%') Then 1 else 0 end) as Count_SoS_Nudges
+                 
+, (case when (primaryprocedurecode_palcategory LIKE '%Spinal fusion, decompression, kyphoplasty and vertebroplasty%' 
+             OR primaryprocedurecode_palcategory LIKE '%Orthopedic Surgeries: Hip, Knee and Shoulder Arthroplasty%') 
+             AND (review_nudgetype LIKE '%SERVICES_ON_REQUEST%' 
+                  OR review_nudgetype LIKE '%SITE_OF_SERVICE%') 
+             AND authstatus = 'APPROVED' Then 1 else 0 end) as Count_SoS_Nudges_ApprovedOnly
+
+
+, (case when (primaryprocedurecode_palcategory LIKE '%Spinal fusion, decompression, kyphoplasty and vertebroplasty%' 
+             OR primaryprocedurecode_palcategory LIKE '%Orthopedic Surgeries: Hip, Knee and Shoulder Arthroplasty%') 
+             AND (review_nudgetype LIKE '%SERVICES_ON_REQUEST%' 
+                  OR review_nudgetype LIKE '%SITE_OF_SERVICE%') 
+             AND authstatus = 'APPROVED' 
+             AND (encountertype = 'OUTPATIENT') Then 1 else 0 end) as Successful_SoS_Nudges_ApprovedOnly
+
+
+-- flags for Unit based nudges
+, (case when (review_nudgetype LIKE '%UNITS%') Then 1 else 0 end) as Count_Units_Nudges
+ 
+ , (case when review_nudgetype LIKE '%UNITS%' 
+             AND authstatus = 'APPROVED' Then 1 else 0 end) as Count_Units_Nudges_ApprovedOnly
+
+
+, (case when review_nudgetype LIKE '%UNITS%'
+             AND authstatus = 'APPROVED' 
+             AND (cast(units as integer) < cast(historical_intake_units as integer) ) Then 1 else 0 end) as Successful_Units_Nudges_ApprovedOnly
+
+, (case when review_nudgetype LIKE '%UNITS%'
+             AND authstatus = 'APPROVED'
+             AND (cast(units as integer) < cast(historical_intake_units as integer) ) Then (cast(historical_intake_units as integer) - cast(units as integer)) else 0 end) as Reduced_Units_Nudges
+  
+  
+, (case when (review_nudgetype LIKE '%UNITS%'
+             AND authstatus = 'APPROVED' 
+             AND (cast(units as integer) < cast(historical_intake_units as integer) ) 
+             AND (cast(historical_intake_units as integer) - cast(units as integer)) < 60)  Then (cast(historical_intake_units as integer) - cast(units as integer)) 
+         when (review_nudgetype LIKE '%UNITS%'
+             AND authstatus = 'APPROVED'
+             AND (cast(units as integer) < cast(historical_intake_units as integer) ) 
+             AND (cast(historical_intake_units as integer) - cast(units as integer)) > 60) Then 60
+         else 0 end) as Reduced_Units_Nudges_Cap60
+
+
+-- time based nudges
+, (case when (review_nudgetype LIKE '%TIMING%'OR review_nudgetype LIKE '%FREQUENCY%') Then 1 else 0 end) as Count_Timing_Nudges
+ 
+
+, (case  when (review_nudgetype LIKE '%TIMING%'OR review_nudgetype LIKE '%FREQUENCY%')
+             AND (authstatus = 'APPROVED' AND (historical_intake_startdate < startdate)) Then 1 else 0 end) as Successful_Timing_Nudges_ApprovedOnly
+, 'Ops' as type_of_nudge
+ 
+from OPs_nudges),
+
+
+/*********** Validate Prod nudges for SOS, units, timing (select PALs) ************/ 
+
+-- UNITS
+-- ENCOUNTER_TYPE
+
+validated_prod_nudges as (
+select *
+-- flags for SOS nudges
+, (case when (primaryprocedurecode_palcategory LIKE '%Spinal fusion, decompression, kyphoplasty and vertebroplasty%' 
+             OR primaryprocedurecode_palcategory LIKE '%Orthopedic Surgeries: Hip, Knee and Shoulder Arthroplasty%') 
+             AND (in_product_nudge_field LIKE '%ENCOUNTER_TYPE%') Then 1 else 0 end) as Count_SoS_Nudges
+                 
+, (case when (primaryprocedurecode_palcategory LIKE '%Spinal fusion, decompression, kyphoplasty and vertebroplasty%' 
+             OR primaryprocedurecode_palcategory LIKE '%Orthopedic Surgeries: Hip, Knee and Shoulder Arthroplasty%') 
+             AND (in_product_nudge_field LIKE '%ENCOUNTER_TYPE%')
+             AND authstatus = 'APPROVED' Then 1 else 0 end) as Count_SoS_Nudges_ApprovedOnly
+
+
+, (case when (primaryprocedurecode_palcategory LIKE '%Spinal fusion, decompression, kyphoplasty and vertebroplasty%' 
+             OR primaryprocedurecode_palcategory LIKE '%Orthopedic Surgeries: Hip, Knee and Shoulder Arthroplasty%') 
+             AND (in_product_nudge_field LIKE '%ENCOUNTER_TYPE%')
+             AND authstatus = 'APPROVED' 
+             AND (encountertype = 'OUTPATIENT') Then 1 else 0 end) as Successful_SoS_Nudges_ApprovedOnly
+
+-- flags for Unit based nudges
+, (case when (in_product_nudge_field LIKE '%UNITS%') Then 1 else 0 end) as Count_Units_Nudges
+ 
+, (case when in_product_nudge_field LIKE '%UNITS%' 
+             AND authstatus = 'APPROVED' Then 1 else 0 end) as Count_Units_Nudges_ApprovedOnly
+
+
+, (case when in_product_nudge_field LIKE '%UNITS%'
+             AND authstatus = 'APPROVED' 
+             AND (cast(units as integer) < cast(beforesnapshot_units as integer) ) Then 1 else 0 end) as Successful_Units_Nudges_ApprovedOnly
+
+, (case when in_product_nudge_field LIKE '%UNITS%'
+             AND authstatus = 'APPROVED'
+             AND (cast(units as integer) < cast(beforesnapshot_units as integer) ) Then (cast(beforesnapshot_units as integer) - cast(units as integer)) else 0 end) as Reduced_Units_Nudges
+  
+  
+, (case when (in_product_nudge_field LIKE '%UNITS%'
+             AND authstatus = 'APPROVED' 
+             AND (cast(units as integer) < cast(beforesnapshot_units as integer) ) 
+             AND (cast(beforesnapshot_units as integer) - cast(units as integer)) < 60)  Then (cast(beforesnapshot_units as integer) - cast(units as integer)) 
+         when (in_product_nudge_field LIKE '%UNITS%'
+             AND authstatus = 'APPROVED'
+             AND (cast(units as integer) < cast(beforesnapshot_units as integer) ) 
+             AND (cast(beforesnapshot_units as integer) - cast(units as integer)) > 60) Then 60
+         else 0 end) as Reduced_Units_Nudges_Cap60
+ 
+-- time based nudges - placeholde as NULL because it doesn't look like there's this type of nudge in product nudges?
+, NULL as Count_Timing_Nudges
+, NULL as Successful_Timing_Nudges_ApprovedOnly
+, 'Product' as type_of_nudge    
+  
+from prod_nudges),
+
+
+/******* Combine tables***********/
+validated_nudges as(
+select * from validated_ops_nudges
+
+UNION ALL
+
+select * from validated_prod_nudges),
+
+
+
+
+
+
+/******* Add to service request data***********/
+
+
+-- startmonth
+-- , submissionmonth
+-- , startweek
+-- , submissionweek
+
+add_ops_nudges as(
+select a.cohereid
+, a.startdate
+, a.submissiondate
+, a.primaryprocedurecode_palcategory
+, a.ruleruntiming
+, a.clinicalservicename
+, a.patient_coverage_lineofbusinesstype
+, a.patient_coverage_policytype
+, a.authstatus
+, a.withdrawnreason
+, a.units 
+, sum(b.Count_SoS_Nudges) as Count_SoS_Nudges_Ops
+, sum(b.Count_SoS_Nudges_ApprovedOnly) as Count_SoS_Nudges_ApprovedOnly_Ops
+, sum(b.Successful_SoS_Nudges_ApprovedOnly) as Successful_SoS_Nudges_ApprovedOnly_OPs
+, sum(b.Count_Units_Nudges) as Count_Units_Nudges_OPs
+, sum(b.Count_Units_Nudges_ApprovedOnly) as Count_Units_Nudges_ApprovedOnly_OPs
+, sum(b.Successful_Units_Nudges_ApprovedOnly) as Successful_Units_Nudges_ApprovedOnly_OPs
+, sum(b.Reduced_Units_Nudges) as Reduced_Units_Nudges_OPs
+, sum(b.Reduced_Units_Nudges_Cap60) as Reduced_Units_Nudges_Cap60_OPs
+, sum(b.Count_Timing_Nudges) as Count_Timing_Nudges_OPs
+, sum(b.Successful_Timing_Nudges_ApprovedOnly) as Successful_Timing_Nudges_ApprovedOnly_OPs
+
+from "tableau"."service_request_production" a
+left join validated_nudges b 
+on a.cohereid = b.cohereid
+and b.type_of_nudge = 'Ops'
+group by 1,2,3,4,5,6,7,8,9,10,11),
+
+
+add_prod_nudges as (
+ select a.* 
+, sum(b.Count_SoS_Nudges) as Count_SoS_Nudges_Prod
+, sum(b.Count_SoS_Nudges_ApprovedOnly) as Count_SoS_Nudges_ApprovedOnly_Prod
+, sum(b.Successful_SoS_Nudges_ApprovedOnly) as Successful_SoS_Nudges_ApprovedOnly_Prod
+, sum(b.Count_Units_Nudges) as Count_Units_Nudges_Prod
+, sum(b.Count_Units_Nudges_ApprovedOnly) as Count_Units_Nudges_ApprovedOnly_Prod
+, sum(b.Successful_Units_Nudges_ApprovedOnly) as Successful_Units_Nudges_ApprovedOnly_Prod
+, sum(b.Reduced_Units_Nudges) as Reduced_Units_Nudges_Prod
+, sum(b.Reduced_Units_Nudges_Cap60) as Reduced_Units_Nudges_Cap60_Prod
+, sum(b.Count_Timing_Nudges) as Count_Timing_Nudges_Prod
+, sum(b.Successful_Timing_Nudges_ApprovedOnly) as Successful_Timing_Nudges_ApprovedOnly_Prod
+
+  from add_ops_nudges a
+  left join validated_nudges b 
+  on a.cohereid = b.cohereid
+and b.type_of_nudge = 'Ops'
+group by 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21)
