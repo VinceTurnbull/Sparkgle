@@ -148,14 +148,37 @@ select *
 , NULL as Successful_Timing_Nudges_ApprovedOnly
 , 'Product' as type_of_nudge    
   
-from prod_nudges)
+from prod_nudges),
 
 
+combine_tables as (
 select * from validated_ops_nudges
-
 UNION ALL
+select * from validated_prod_nudges)
 
-select * from validated_prod_nudges
+
+-- summaries
+select a.*
+, b.authnumber
+, b.submissiondate
+, b.patient_coverage_lineofbusinesstype
+, b.patient_coverage_stateofissue
+, b.encountertype
+, b.placeofservice_name
+, b.patient_coverage_policytype
+, b.primaryprocedurecode_code
+from combine_tables a
+inner join "tableau"."service_request_production" b
+on a.cohereid = b.cohereid
+limit 100
+
+
+
+
+
+
+
+
 
 
 
