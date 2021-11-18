@@ -13,11 +13,13 @@ on a.cohereid = b.cohereid),
 
 
 /*********** Identify OPS and Product nudges ************/ 
--- identify records with ops nudge
+-- identify records with ops nudge; note filtering out ones with attachmetns in product field b/c I notice this leads to duplicate nudge records (reduces dups from 568 to 465)
 OPs_nudges as (
 SELECT *
 FROM Add_start_date_data
-where review_nudge_attempted = TRUE ),
+where review_nudge_attempted = TRUE 
+  and in_product_nudge_field != 'ATTACHMENTS'),
+
 
 
 -- identify prod nudges
@@ -88,7 +90,7 @@ select *
 
 , (case  when (review_nudgetype LIKE '%TIMING%'OR review_nudgetype LIKE '%FREQUENCY%')
              AND (authstatus = 'APPROVED' AND (historical_intake_startdate < startdate)) Then 1 else 0 end) as Successful_Timing_Nudges_ApprovedOnly
-, 'Ops' as type_of_nudge
+, 'Ops' as svc_vs_ops_nudge
  
 from OPs_nudges),
 
@@ -120,7 +122,7 @@ select *
 -- flags for Unit based nudges
 , (case when (in_product_nudge_field LIKE '%UNITS%') Then 1 else 0 end) as Count_Units_Nudges
  
-, (case when in_product_nudge_field LIKE '%UNITS%' 
+ , (case when in_product_nudge_field LIKE '%UNITS%' 
              AND authstatus = 'APPROVED' Then 1 else 0 end) as Count_Units_Nudges_ApprovedOnly
 
 
@@ -146,77 +148,111 @@ select *
 -- time based nudges - placeholde as NULL because it doesn't look like there's this type of nudge in product nudges?
 , NULL as Count_Timing_Nudges
 , NULL as Successful_Timing_Nudges_ApprovedOnly
-, 'Product' as type_of_nudge    
+, 'Product' as svc_vs_ops_nudge    
   
 from prod_nudges),
 
 
-/******* Combine tables***********/
-validated_nudges as(
+combine_tables as (
 select * from validated_ops_nudges
-
 UNION ALL
-
 select * from validated_prod_nudges),
 
 
-
-
-
-
-/******* Add to service request data***********/
-
-
--- startmonth
--- , submissionmonth
--- , startweek
--- , submissionweek
-
-add_ops_nudges as(
-select a.cohereid
-, a.startdate
-, a.submissiondate
-, a.primaryprocedurecode_palcategory
-, a.ruleruntiming
-, a.clinicalservicename
-, a.patient_coverage_lineofbusinesstype
-, a.patient_coverage_policytype
-, a.authstatus
-, a.withdrawnreason
-, a.units 
-, sum(b.Count_SoS_Nudges) as Count_SoS_Nudges_Ops
-, sum(b.Count_SoS_Nudges_ApprovedOnly) as Count_SoS_Nudges_ApprovedOnly_Ops
-, sum(b.Successful_SoS_Nudges_ApprovedOnly) as Successful_SoS_Nudges_ApprovedOnly_OPs
-, sum(b.Count_Units_Nudges) as Count_Units_Nudges_OPs
-, sum(b.Count_Units_Nudges_ApprovedOnly) as Count_Units_Nudges_ApprovedOnly_OPs
-, sum(b.Successful_Units_Nudges_ApprovedOnly) as Successful_Units_Nudges_ApprovedOnly_OPs
-, sum(b.Reduced_Units_Nudges) as Reduced_Units_Nudges_OPs
-, sum(b.Reduced_Units_Nudges_Cap60) as Reduced_Units_Nudges_Cap60_OPs
-, sum(b.Count_Timing_Nudges) as Count_Timing_Nudges_OPs
-, sum(b.Successful_Timing_Nudges_ApprovedOnly) as Successful_Timing_Nudges_ApprovedOnly_OPs
-
-from "tableau"."service_request_production" a
-left join validated_nudges b 
+-- summaries
+nudge_summary as (
+  select a.*
+, b.authnumber
+, b.submissiondate
+, b.patient_coverage_lineofbusinesstype
+, b.patient_coverage_stateofissue
+, b.encountertype
+, b.placeofservice_name
+, b.patient_coverage_policytype
+, b.primaryprocedurecode_code
+, (case
+when a.count_sos_nudges = 1 then 'SOS Nudge'
+when  a.count_units_nudges = 1 then 'Unit Nudge'
+when a.count_timing_nudges = 1 then 'Timing Nudge'
+else NULL end) as Nudge_Type
+from combine_tables a
+inner join "tableau"."service_request_production" b
 on a.cohereid = b.cohereid
-and b.type_of_nudge = 'Ops'
-group by 1,2,3,4,5,6,7,8,9,10,11),
+where a.count_sos_nudges = 1 
+or a.count_units_nudges = 1
+or a.count_timing_nudges = 1),
 
 
-add_prod_nudges as (
- select a.* 
-, sum(b.Count_SoS_Nudges) as Count_SoS_Nudges_Prod
-, sum(b.Count_SoS_Nudges_ApprovedOnly) as Count_SoS_Nudges_ApprovedOnly_Prod
-, sum(b.Successful_SoS_Nudges_ApprovedOnly) as Successful_SoS_Nudges_ApprovedOnly_Prod
-, sum(b.Count_Units_Nudges) as Count_Units_Nudges_Prod
-, sum(b.Count_Units_Nudges_ApprovedOnly) as Count_Units_Nudges_ApprovedOnly_Prod
-, sum(b.Successful_Units_Nudges_ApprovedOnly) as Successful_Units_Nudges_ApprovedOnly_Prod
-, sum(b.Reduced_Units_Nudges) as Reduced_Units_Nudges_Prod
-, sum(b.Reduced_Units_Nudges_Cap60) as Reduced_Units_Nudges_Cap60_Prod
-, sum(b.Count_Timing_Nudges) as Count_Timing_Nudges_Prod
-, sum(b.Successful_Timing_Nudges_ApprovedOnly) as Successful_Timing_Nudges_ApprovedOnly_Prod
 
-  from add_ops_nudges a
-  left join validated_nudges b 
-  on a.cohereid = b.cohereid
-and b.type_of_nudge = 'Ops'
-group by 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21)
+/*select *
+from nudge_summary 
+where cohereid in (select cohereid from
+                   (select cohereid, count(*) as row_count from nudge_summary group by 1)
+                   where row_count > 1)*/
+
+-- dedup nudge summary, force 1-1
+dedup_validate_nudge as (
+select * from (
+select *
+, row_number() over (partition by cohereid) as cohereid_rowcount
+from nudge_summary)
+where cohereid_rowcount = 1),
+
+
+-- join back to svc req data
+join_nudges_to_svc_req as (
+select a.*
+, b.Count_SoS_Nudges
+, b.Count_SoS_Nudges_ApprovedOnly
+, b.Successful_SoS_Nudges_ApprovedOnly
+, b.Count_Units_Nudges
+, b.Count_Units_Nudges_ApprovedOnly
+, b.Successful_Units_Nudges_ApprovedOnly
+, b.Reduced_Units_Nudges
+, b.Reduced_Units_Nudges_Cap60
+, b.Count_Timing_Nudges
+, b.Successful_Timing_Nudges_ApprovedOnly
+, b.svc_vs_ops_nudge
+, b.Nudge_Type
+from "tableau"."service_request_production" a
+left join dedup_validate_nudge b
+on a.cohereid = b.cohereid)
+
+
+
+select concat(substring(cast(startdate as varchar),1,4), substring(cast(startdate as varchar),6,2)) as startdate_YYYYMM
+, concat(substring(cast(submissiondate as varchar),1,4), substring(cast(submissiondate as varchar),6,2)) as submissiondate_YYYYMM
+, primaryprocedurecode_palcategory
+, ruleruntiming
+, clinicalservicename
+, patient_coverage_lineofbusinesstype
+, authstatus
+, encountertype
+, withdrawnreason
+, patient_coverage_policytype
+, svc_vs_ops_nudge 
+, count(*) as total_auths
+, sum(units) as total_units
+, sum(Count_SoS_Nudges) as Count_SoS_Nudges
+, sum(Count_SoS_Nudges_ApprovedOnly) as Count_SoS_Nudges_ApprovedOnly
+, sum(Successful_SoS_Nudges_ApprovedOnly) as Successful_SoS_Nudges_ApprovedOnly
+, sum(Count_Units_Nudges) as Count_Units_Nudges
+, sum(Count_Units_Nudges_ApprovedOnly) as Count_Units_Nudges_ApprovedOnly
+, sum(Successful_Units_Nudges_ApprovedOnly) as Successful_Units_Nudges_ApprovedOnly
+, sum(Reduced_Units_Nudges) as Reduced_Units_Nudges
+, sum(Reduced_Units_Nudges_Cap60) as Reduced_Units_Nudges_Cap60
+, sum(Count_Timing_Nudges) as Count_Timing_Nudges
+, sum(Successful_Timing_Nudges_ApprovedOnly) as Successful_Timing_Nudges_ApprovedOnly
+from join_nudges_to_svc_req
+group by 1,2,3,4,5,6,7,8,9,10,11
+
+
+
+
+
+
+
+
+
+
+
